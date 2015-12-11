@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Mind Map</title>
+<meta name="description" content="mindmap demo" />
+
+<meta charset="UTF-8">
+<script src="go.js"></script>
+<link href="../assets/css/goSamples.css" rel="stylesheet" type="text/css" />  <!-- you don't need to use this -->
+<script src="goSamples.js"></script>  <!-- this is only for the GoJS Samples framework -->
+<script id="code">
+  function init() {
+  // Reference: http://gojs.net/latest/samples/mindMap.html
+    if (window.goSamples) goSamples();  // init for these samples -- you don't need to call this
+    var $ = go.GraphObject.make;
+    myDiagram =
+      $(go.Diagram, "myDiagram",
+        {
+          // when the user drags a node, also move/copy/delete the whole subtree starting with that node
+          "commandHandler.copiesTree": true,
+          "commandHandler.deletesTree": true,
+          "draggingTool.dragsTree": true,
+          initialContentAlignment: go.Spot.Center,  // center the whole graph
+          "undoManager.isEnabled": true
+        });
+    // when the document is modified, add a "*" to the title and enable the "Save" button
+    myDiagram.addDiagramListener("Modified", function(e) {
+      var button = document.getElementById("SaveButton");
+      if (button) button.disabled = !myDiagram.isModified;
+      var idx = document.title.indexOf("*");
+      if (myDiagram.isModified) {
+        if (idx < 0) document.title += "*";
+      } else {
+        if (idx >= 0) document.title = document.title.substr(0, idx);
+      }
+    });
+    // a node consists of some text with a line shape underneath
+    myDiagram.nodeTemplate =
+      $(go.Node, "Vertical",
+        { selectionObjectName: "TEXT" },
+        $(go.TextBlock,
+          {
+            name: "TEXT",
+            minSize: new go.Size(30, 15),
+            editable: true
+          },
+          // remember not only the text string but the scale and the font in the node data
+          new go.Binding("text", "text").makeTwoWay(),
+          new go.Binding("scale", "scale").makeTwoWay(),
+          new go.Binding("font", "font").makeTwoWay()),
+        $(go.TextBlock,
+          {
+            name: "VIDEO",
+			visible: false
+          },
+          // remember not only the text string but the scale and the font in the node data
+          new go.Binding("text", "vidtext").makeTwoWay(),
+          new go.Binding("scale", "scale2").makeTwoWay(),
+          new go.Binding("font", "font2").makeTwoWay()),
+          $(go.TextBlock,
+          {
+            name: "HOMEWORK",
+            visible: false
+          },
+          // remember not only the text string but the scale and the font in the node data
+          new go.Binding("text", "hwtext").makeTwoWay(),
+          new go.Binding("scale", "scale3").makeTwoWay(),
+          new go.Binding("font", "font3").makeTwoWay()),
+        $(go.Shape, "LineH",
+          {
+            stretch: go.GraphObject.Horizontal,
+            strokeWidth: 3, height: 3,
+            // this line shape is the port -- what links connect with
+            portId: "", fromSpot: go.Spot.LeftRightSides, toSpot: go.Spot.LeftRightSides
+          },
+          new go.Binding("stroke", "brush"),
+          // make sure links come in from the proper direction and go out appropriately
+          new go.Binding("fromSpot", "dir", function(d) { return spotConverter(d, true); }),
+          new go.Binding("toSpot", "dir", function(d) { return spotConverter(d, false); })),
+        // remember the locations of each node in the node data
+        new go.Binding("location", "loc", go.Point.parse).makeTwoWay(go.Point.stringify),
+        // make sure text "grows" in the desired direction
+        new go.Binding("locationSpot", "dir", function(d) { return spotConverter(d, false); })
+      );
+    // selected nodes show a button for adding children
+    myDiagram.nodeTemplate.selectionAdornmentTemplate =
+      $(go.Adornment, "Spot",
+        $(go.Panel, "Auto",
+          // this Adornment has a rectangular blue Shape around the selected node
+          $(go.Shape, { fill: null, stroke: "dodgerblue", strokeWidth: 3 }),
+          $(go.Placeholder, { margin: new go.Margin(4, 4, 0, 4) })
+        ),
+        // and this Adornment has a Button to the right of the selected node
+        $("Button",
+          {
+            alignment: go.Spot.Right,
+            alignmentFocus: go.Spot.Left,
+            click: addNodeAndLink  // define click behavior for this Button in the Adornment
+          },
+          $(go.TextBlock, "+",  // the Button content
+            { font: "bold 8pt sans-serif" })
+        )
+      );
+    // the context menu allows users to change the font size and weight,
+    // and to perform a limited tree layout starting at that node
+    myDiagram.nodeTemplate.contextMenu =
+      $(go.Adornment, "Vertical",
+		$("ContextMenuButton",
+		  $(go.TextBlock, "Video"),
+		  { click: function(e, obj) { openLink(obj); }}),
+		$("ContextMenuButton",
+		  $(go.TextBlock, "Homework"),
+		  { click: function(e, obj) { openHwLink(obj); }}),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Bigger"),
+          { click: function(e, obj) { changeTextSize(obj, 1.1); } }),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Smaller"),
+          { click: function(e, obj) { changeTextSize(obj, 1/1.1); } }),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Bold/Normal"),
+          { click: function(e, obj) { toggleTextWeight(obj); } }),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Layout"),
+          {
+            click: function(e, obj) {
+                var adorn = obj.part;
+                adorn.diagram.startTransaction("Subtree Layout");
+                layoutTree(adorn.adornedPart);
+                adorn.diagram.commitTransaction("Subtree Layout");
+              }
+          }
+        )
+      );
+    // a link is just a Bezier-curved line of the same color as the node to which it is connected
+    myDiagram.linkTemplate =
+      $(go.Link,
+        {
+          curve: go.Link.Bezier,
+          fromShortLength: -2,
+          toShortLength: -2,
+          selectable: false
+        },
+        $(go.Shape,
+          { strokeWidth: 3 },
+          new go.Binding("stroke", "toNode", function(n) {
+            if (n.data.brush) return n.data.brush;
+            return "black";
+          }).ofObject())
+      );
+    // the Diagram's context menu just displays commands for general functionality
+    myDiagram.contextMenu =
+      $(go.Adornment, "Vertical",
+        $("ContextMenuButton",
+          $(go.TextBlock, "Undo"),
+          { click: function(e, obj) { e.diagram.commandHandler.undo(); } },
+          new go.Binding("visible", "", function(o) { return o.diagram.commandHandler.canUndo(); }).ofObject()),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Redo"),
+          { click: function(e, obj) { e.diagram.commandHandler.redo(); } },
+          new go.Binding("visible", "", function(o) { return o.diagram.commandHandler.canRedo(); }).ofObject()),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Save"),
+          { click: function(e, obj) { save(); } }),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Load"),
+          { click: function(e, obj) { load(); } })
+      );
+    myDiagram.addDiagramListener("SelectionMoved", function(e) {
+      var rootX = myDiagram.findNodeForKey(0).location.x;
+      myDiagram.selection.each(function(node) {
+          if (node.data.parent !== 0) return; // Only consider nodes connected to the root
+          var nodeX = node.location.x;
+          if (rootX < nodeX && node.data.dir !== "right") {
+            node.data.dir = 'right';
+            myDiagram.model.updateTargetBindings(node.data);
+            layoutTree(node);
+          } else if (rootX > nodeX && node.data.dir !== "left") {
+            node.data.dir = 'left';
+            myDiagram.model.updateTargetBindings(node.data);
+            layoutTree(node);
+          }
+        });
+    });
+    // read in the predefined graph using the JSON format data held in the "mySavedModel" textarea
+    load();
+  }
+  //opens the hyperlink for the given node
+  function openLink(obj) {
+    var adorn = obj.part;
+    var node = adorn.adornedPart;
+    var tb = node.findObject("VIDEO");
+	if(tb.text)
+		window.location.replace(tb.text);
+  }
+  //opens the homework for the given node
+  function openHwLink(obj) {
+    var adorn = obj.part;
+    var node = adorn.adornedPart;
+    var tb = node.findObject("HOMEWORK");
+	if(tb.text)
+		window.location.replace(tb.text);
+  }
+  function spotConverter(dir, from) {
+    if (dir === "left") {
+      return (from ? go.Spot.Left : go.Spot.Right);
+    } else {
+      return (from ? go.Spot.Right : go.Spot.Left);
+    }
+  }
+  function changeTextSize(obj, factor) {
+    var adorn = obj.part;
+    adorn.diagram.startTransaction("Change Text Size");
+    var node = adorn.adornedPart;
+    var tb = node.findObject("TEXT");
+    tb.scale *= factor;
+    adorn.diagram.commitTransaction("Change Text Size");
+  }
+  function toggleTextWeight(obj) {
+    var adorn = obj.part;
+    adorn.diagram.startTransaction("Change Text Weight");
+    var node = adorn.adornedPart;
+    var tb = node.findObject("TEXT");
+    // assume "bold" is at the start of the font specifier
+    var idx = tb.font.indexOf("bold");
+    if (idx < 0) {
+      tb.font = "bold " + tb.font;
+    } else {
+      tb.font = tb.font.substr(idx + 5);
+    }
+    adorn.diagram.commitTransaction("Change Text Weight");
+  }
+  function addNodeAndLink(e, obj) {
+    var adorn = obj.part;
+    var diagram = adorn.diagram;
+    diagram.startTransaction("Add Node");
+    var oldnode = adorn.adornedPart;
+    var olddata = oldnode.data;
+    // copy the brush and direction to the new node data
+    var newdata = { text: "idea", brush: olddata.brush, dir: olddata.dir, parent: olddata.key };
+    diagram.model.addNodeData(newdata);
+    layoutTree(oldnode);
+    diagram.commitTransaction("Add Node");
+  }
+  function layoutTree(node) {
+    if (node.data.key === 0) {  // adding to the root?
+      layoutAll();  // lay out everything
+    } else {  // otherwise lay out only the subtree starting at this parent node
+      var parts = node.findTreeParts();
+      layoutAngle(parts, node.data.dir === "left" ? 180 : 0);
+    }
+  }
+  function layoutAngle(parts, angle) {
+    var layout = go.GraphObject.make(go.TreeLayout,
+        { angle: angle,
+          arrangement: go.TreeLayout.ArrangementFixedRoots,
+          nodeSpacing: 5,
+          layerSpacing: 20 });
+    layout.doLayout(parts);
+  }
+  function layoutAll() {
+    var root = myDiagram.findNodeForKey(0);
+    if (root === null) return;
+    myDiagram.startTransaction("Layout");
+    // split the nodes and links into two collections
+    var rightward = new go.Set(go.Part);
+    var leftward = new go.Set(go.Part);
+    root.findLinksConnected().each(function(link) {
+        var child = link.toNode;
+        if (child.data.dir === "left") {
+          leftward.add(root);  // the root node is in both collections
+          leftward.add(link);
+          leftward.addAll(child.findTreeParts());
+        } else {
+          rightward.add(root);  // the root node is in both collections
+          rightward.add(link);
+          rightward.addAll(child.findTreeParts());
+        }
+      });
+    // do one layout and then the other without moving the shared root node
+    layoutAngle(rightward, 0);
+    layoutAngle(leftward, 180);
+    myDiagram.commitTransaction("Layout");
+  }
+  // Show the diagram's model in JSON format
+  function save() {
+    document.getElementById("mySavedModel").value = myDiagram.model.toJson();
+    myDiagram.isModified = false;
+  }
+  function load() {
+    myDiagram.model = go.Model.fromJson(document.getElementById("mySavedModel").value);
+  }
+  function instructionLoad() {
+  	window.open("manual.pdf");
+  }
+</script>
+</head>
+<body onload="init()">
+<div id="sample">
+
+  <div id="myDiagram" style="border: solid 1px blue; width:100%; height:300px;"></div>
+
+  <button id="SaveButton" onclick="save()">Save</button>
+  <button onclick="load()">Load</button>
+  <button onclick="layoutAll()">Layout</button>
+    <button onclick="instructionLoad()">Manual</button>
+
+  <br />
+  <textarea id="mySavedModel" style="width:100%;height:400px">
+{ "class": "go.TreeModel",
+  "nodeDataArray": [ 
+{"key":0, "text":"Intro to Com Sci", "vidtext":"https://www.youtube.com/watch?v=9nkR2LLPiYo", "loc":"-65.99999999999997 7", "font":"bold 13px sans-serif"},
+{"text":"If Statements", "brush":"coral", "dir":"right", "parent":0, "key":-2, "vidtext":"if.html", "hwtext":"if.html", "loc":"56.00000000000005 -48.8", "scale":1, "font":"bold 13px sans-serif"},
+{"text":"While Statements", "brush":"skyblue", "dir":"right", "parent":-2, "key":-3, "vidtext":"while.html", "loc":"156.99999999999997 -68.29999999999997", "font":"bold 13px sans-serif"},
+{"text":"Increments", "brush":"skyblue", "dir":"right", "parent":-2, "key":-4, "vidtext":"inc.html", "loc":"156.99999999999997 -29.299999999999997", "font":"bold 13px sans-serif"},
+{"text":"Loops in Lists", "brush":"palevioletred", "dir":"left", "parent":0, "key":-5, "vidtext":"looplist.html", "loc":"-86.00000000000006 -112.67567567567565", "font":"bold 13px sans-serif"},
+{"text":"Aliasing", "brush":"palevioletred", "dir":"left", "parent":0, "key":-6, "vidtext":"aliasing.html", "loc":"-85.99999999999994 -86.67567567567569", "font":"bold 13px sans-serif"},
+{"text":"Data Structures", "brush":"palevioletred", "dir":"left", "parent":0, "key":-7, "vidtext":"datastruct.html", "loc":"-86.00000000000003 -15.17567567567568", "font":"bold 13px sans-serif"},
+{"text":"Hashing", "brush":"orange", "dir":"left", "parent":-7, "key":-8, "vidtext":"hash.html", "loc":"-200.99999999999997 -47.67567567567568", "font":"bold 13px sans-serif"},
+{"text":"Strings", "brush":"palevioletred", "dir":"left", "parent":0, "key":-9, "vidtext":"string.html", "loc":"-85.99999999999994 82.67567567567568", "font":"bold 13px sans-serif"},
+{"text":"Testing", "brush":"coral", "parent":0, "key":-10, "vidtext":"testing.html", "loc":"56.00000000000005 -4.700000000000004", "font":"bold 13px sans-serif"},
+{"text":"Evaluate Equations", "brush":"green", "dir":"right", "parent":-4, "key":-11, "vidtext":"var1.html", "loc":"246.00000000000003 -42.3", "font":"bold 13px sans-serif"},
+{"text":"Valid Strings", "brush":"grey", "dir":"left", "parent":-9, "key":-13, "vidtext":"validstring.html", "loc":"-150.99999999999997 56.67567567567568", "font":"bold 13px sans-serif"},
+{"text":"String Equivalence ", "brush":"grey", "dir":"left", "parent":-9, "key":-14, "vidtext":"string1.html", "loc":"-151 82.67567567567568", "font":"bold 13px sans-serif"},
+{"text":"Printing Strings", "brush":"grey", "dir":"left", "parent":-9, "key":-15, "vidtext":"string2.html", "loc":"-151.00000000000003 108.67567567567566", "font":"bold 13px sans-serif"},
+{"text":"Printing Variables", "brush":"green", "dir":"right", "parent":-4, "key":-16, "vidtext":"printvar.html", "loc":"246.00000000000003 -16.299999999999997", "font":"bold 13px sans-serif"},
+{"text":"Advanced Testing", "brush":"purple", "parent":-10, "key":-17, "vidtext":"testing2.html", "loc":"122.00000000000001 -4.700000000000004", "font":"bold 13px sans-serif"},
+{"text":"Find Strings", "brush":"yellow", "dir":"left", "parent":-14, "key":-18, "vidtext":"findstring.html", "loc":"-289 82.67567567567568", "font":"bold 13px sans-serif"},
+{"text":"Procedures", "brush":"coral", "parent":0, "key":-19, "vidtext":"procedure.html", "loc":"56.000000000000064 73.30000000000001", "font":"bold 13px sans-serif"},
+{"text":"Outputs", "brush":"red", "parent":-19, "key":-20, "vidtext":"output.html", "loc":"146.99999999999991 21.29999999999999", "font":"bold 13px sans-serif"},
+{"text":"Returns", "brush":"red", "parent":-19, "key":-21, "vidtext":"return.html", "loc":"146.99999999999991 47.3", "font":"bold 13px sans-serif"},
+{"text":"Summation", "brush":"red", "parent":-19, "key":-22, "loc":"146.99999999999991 73.30000000000001", "font":"bold 13px sans-serif"},
+{"text":"Equality", "brush":"red", "parent":-19, "key":-23, "vidtext":"equal.html", "loc":"146.99999999999991 99.30000000000001", "font":"bold 13px sans-serif"},
+{"text":"Breaks", "brush":"red", "parent":-19, "key":-24, "vidtext":"break.html", "loc":"146.99999999999991 125.29999999999995", "font":"bold 13px sans-serif"},
+{"text":"Print List", "brush":"magenta", "dir":"left", "parent":-5, "key":-25, "vidtext":"printlist.html", "loc":"-195 -138.6756756756757", "font":"bold 13px sans-serif"},
+{"text":"Change List Values", "brush":"magenta", "dir":"left", "parent":-5, "key":-26, "vidtext":"changelist.html", "loc":"-195 -112.67567567567565", "font":"bold 13px sans-serif"},
+{"text":"Advanced Equations", "brush":"brown", "dir":"right", "parent":-11, "key":-27, "vidtext":"var2.html", "loc":"385.9999999999999 -42.3", "font":"bold 13px sans-serif"},
+{"text":"Append List", "brush":"magenta", "dir":"left", "parent":-5, "key":-28, "vidtext":"appendlist.html", "loc":"-194.99999999999994 -86.67567567567569", "font":"bold 13px sans-serif"},
+{"text":"Links", "brush":"palevioletred", "dir":"left", "parent":0, "key":-29, "vidtext":"link.html", "loc":"-85.99999999999994 147.6756756756756", "font":"bold 13px sans-serif"},
+{"text":"Update Links", "brush":"blue", "dir":"left", "parent":-29, "key":-30, "vidtext":"updatelink.html", "loc":"-139.9999999999999 134.67567567567573", "font":"bold 13px sans-serif"},
+{"text":"Traverse Links", "brush":"blue", "dir":"left", "parent":-29, "key":-31, "vidtext":"getlink.html", "loc":"-140 160.6756756756757", "font":"bold 13px sans-serif"},
+{"text":"Speed", "brush":"orange", "dir":"left", "parent":-7, "key":-32, "vidtext":"hashspeed.html", "loc":"-200.9999999999999 17.32432432432432", "font":"bold 13px sans-serif"},
+{"text":"Size vs Time", "brush":"teal", "dir":"left", "parent":-32, "key":-33, "vidtext":"indexsize.html", "loc":"-259.9999999999999 -8.67567567567568", "font":"bold 13px sans-serif"},
+{"text":"Lookup Time", "brush":"teal", "dir":"left", "parent":-32, "key":-34, "vidtext":"lookup.html", "loc":"-260.00000000000017 17.32432432432432", "font":"bold 13px sans-serif"},
+{"text":"Worst Case", "brush":"teal", "dir":"left", "parent":-32, "key":-35, "vidtext":"worst.html", "loc":"-260.00000000000017 43.324324324324316", "font":"bold 13px sans-serif"},
+{"text":"Fast Enough", "brush":"pink", "dir":"left", "parent":-34, "key":-36, "vidtext":"fastenough.html", "loc":"-362.0000000000002 17.32432432432432", "font":"bold 13px sans-serif"},
+{"text":"Bad Hash", "brush":"palegreen", "dir":"left", "parent":-8, "key":-37, "vidtext":"badhash.html", "loc":"-271.99999999999994 -60.675675675675684", "font":"bold 13px sans-serif"},
+{"text":"Buckets", "brush":"palegreen", "dir":"left", "parent":-8, "key":-38, "vidtext":"bucket.html", "loc":"-272 -34.67567567567568", "scale":1, "font":"bold 13px sans-serif"}
+ ]}
+  
+  
+  
+  </textarea>
+</div>
+</body>
+</html>
